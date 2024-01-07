@@ -8,7 +8,9 @@
         center?: { x: number, y: number },
         placementOffset?: number
         placementOffsetVariation?: number
-        drawShape: (ctx) => void
+        drawShape: (ctx) => void:
+        displacement?: { x: number, y: number }
+        displacementInterval?: number
     }
 */
 
@@ -60,9 +62,40 @@ class WallpaperGen {
         this.width = width;
         this.height = height;
         this.backgroundColor = backgroundColor;
-        this.scatters = scatters;
         this.center = center;
         this.gapSize = gapSize;
+
+        this.nogapCanvas = document.createElement('canvas');
+        this.nogapCtx = this.nogapCanvas.getContext('2d');
+        this.nogapCanvas.width = width;
+        this.nogapCanvas.height = height;
+
+        const actualScatters = [];
+        for (const scatter of scatters) {
+            if (scatter.repeat) {
+                for (let i = 0; i < scatter.repeat; i++) {
+                    actualScatters.push({
+                        ...scatter
+                    });
+                }
+            }
+            else {
+                actualScatters.push(scatter);
+            }
+        }
+        this.scatters = actualScatters;
+    }
+
+
+    resize(width, height, center = this.center) {
+        this.canvas.width = width + this.gapSize;
+        this.canvas.height = height;
+        this.width = width;
+        this.height = height;
+        this.center = center;
+        this.nogapCanvas.width = width;
+        this.nogapCanvas.height = height;
+
     }
 
     generate() {
@@ -71,7 +104,6 @@ class WallpaperGen {
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         for (const scatter of this.scatters) {
-            console.log(scatter);
             this.drawScatter(scatter);
         }
     }
@@ -87,9 +119,10 @@ class WallpaperGen {
         }
     }
 
-    _drawColorScatter(scatter, ctx = this.ctx, canvas = this.canvas) {
-        const scatterCount = (canvas.width * canvas.height ** 0.5) * scatter.ratio;
-        console.log(scatterCount);
+    _drawScatter(scatter, ctx = this.ctx, canvas = this.canvas) {
+        let scatterCount = (canvas.width * canvas.height ** 0.5) * scatter.ratio;
+        if (scatter.repeat) scatterCount /= scatter.repeat;
+        scatterCount = Math.floor(scatterCount);
         ctx.fillStyle = scatter.fill;
         ctx.strokeStyle = scatter.fill;
         ctx.shadowColor = scatter.fill;
@@ -118,14 +151,30 @@ class WallpaperGen {
         }
     }
 
+    _drawColorScatter(scatter) {
+        const newCanvas = document.createElement('canvas');
+        const ctx2 = newCanvas.getContext('2d');
+        newCanvas.width = this.canvas.width + (scatter.displacement?.x * 2 || 0);
+        newCanvas.height = this.canvas.height + (scatter.displacement?.y * 2 || 0);
+
+        ctx2.clearRect(0, 0, newCanvas.width, newCanvas.height);
+
+        this._drawScatter({
+            ...scatter,
+            opacity: 1
+        }, ctx2, newCanvas);
+
+        scatter.canvas = newCanvas;
+    }
+
     _drawGradientScatter(scatter) {
         const newCanvas = document.createElement('canvas');
         const ctx2 = newCanvas.getContext('2d');
-        newCanvas.width = this.canvas.width;
-        newCanvas.height = this.canvas.height;
+        newCanvas.width = this.canvas.width + (scatter.displacement?.x * 2 || 0);
+        newCanvas.height = this.canvas.height + (scatter.displacement?.y * 2 || 0);
         ctx2.clearRect(0, 0, newCanvas.width, newCanvas.height);
 
-        this._drawColorScatter({
+        this._drawScatter({
             ...scatter,
             opacity: 1,
             fill: "#ffffff",
@@ -146,8 +195,125 @@ class WallpaperGen {
         ctx2.globalCompositeOperation = "source-in";
         ctx2.fillRect(0, 0, newCanvas.width, newCanvas.height);
 
-        this.ctx.globalAlpha = scatter.opacity;
-        this.ctx.drawImage(newCanvas, 0, 0);
+        scatter.canvas = newCanvas;
+    }
+
+    regenerateScatter(scatter) {
+        console.log("regenerating");
+        const scatter2 = {
+            ...scatter,
+            canvas: undefined
+        }
+
+        if (scatter.fillType === "gradient") {
+            scatter2.fill = scatter2.fill.sort(() => Math.random() - 0.5).slice(0, 4)
+        }
+
+        switch (scatter.fillType) {
+            case "color":
+                this._drawColorScatter(scatter2);
+                break;
+            case "gradient":
+                this._drawGradientScatter(scatter2);
+                break;
+        }
+
+        const oldCanvas = scatter.canvas;
+        const newCanvas = document.createElement('canvas');
+        const ctx = newCanvas.getContext('2d');
+        newCanvas.width = oldCanvas.width;
+        newCanvas.height = oldCanvas.height;
+
+        scatter.canvas = newCanvas;
+
+        let alpha = 0.01;
+        const draw = () => {
+            ctx.clearRect(0, 0, newCanvas.width, newCanvas.height);
+            if (alpha < 1) {
+                ctx.globalAlpha = 1 - alpha;
+                ctx.drawImage(oldCanvas, 0, 0);
+            }
+            ctx.globalAlpha = alpha;
+            ctx.drawImage(scatter2.canvas, 0, 0);
+        }
+
+        const int = setInterval(() => {
+            draw();
+            if (alpha >= 1) clearInterval(int);
+            alpha += 0.01;
+        }, 10);
+        draw();
+    }
+
+    startRendering() {
+        const staticCanvas = document.createElement('canvas');
+        const staticCtx = staticCanvas.getContext('2d');
+        staticCanvas.width = this.canvas.width;
+        staticCanvas.height = this.canvas.height;
+        for (const scatter of this.scatters) {
+            if (!scatter.displacement) {
+                try {
+                    staticCtx.drawImage(scatter.canvas, 0, 0);
+                }
+                catch (e) {
+                    console.log(scatter);
+                    throw e;
+                }
+            }
+            else {
+                scatter._lastRegenerate = -Math.random() * scatter.regenerateEvery;
+                scatter._displacementOffset = Math.random() * 1000;
+            }
+        }
+        const scatterDisplacements = this.scatters.filter(scatter => scatter.displacement);
+        let fps = 20;
+        let timePassed = 0;
+        this.nogapCtx.fillStyle = this.backgroundColor;
+        this.renderInterval = setInterval(() => {
+            this.nogapCtx.fillRect(0, 0, this.nogapCanvas.width, this.nogapCanvas.height);
+            this.nogapDrawImage(staticCanvas, 0, 0);
+            for (const scatter of scatterDisplacements) {
+                const displacement = (scatter.displacementInterval * timePassed + scatter._displacementOffset) * Math.PI;
+                this.nogapDrawImage(scatter.canvas,
+                    -scatter.displacement.x * Math.sin(displacement),
+                    scatter.displacement.x * Math.sin(displacement)
+                );
+                if (timePassed - scatter._lastRegenerate > scatter.regenerateEvery) {
+                    this.regenerateScatter(scatter);
+                    scatter._lastRegenerate = timePassed;
+                }
+            }
+
+            timePassed += 1000 / (fps * 2);
+
+        }, 1000 / fps);
+    }
+
+    nogapDrawImage(image, x, y) {
+        const { width, height } = this.nogapCanvas;
+        this.nogapCtx.drawImage(image, x, y, width / 2, height, 0, 0, width / 2, height);
+        this.nogapCtx.drawImage(image, x + width / 2 + this.gapSize, y, width / 2, height, width / 2, 0, width / 2, height);
+    }
+
+    generateNoGap() {
+        const { nogapCtx } = this;
+        nogapCtx.drawImage(
+            this.canvas,
+            0,
+            0
+        )
+        nogapCtx.drawImage(
+            this.canvas,
+            this.width / 2 + this.gapSize,
+            0,
+            this.width / 2,
+            this.height,
+
+            this.width / 2,
+            0,
+            this.width / 2,
+            this.height
+        );
     }
 
     download() {
@@ -185,7 +351,7 @@ class WallpaperGen {
 
 const gapSize = 64;
 const width = 3840;
-const height = 1080;
+const height = window.innerHeight;
 const baseSize = 200;
 
 const gradients = ["#e91e63", "#9c27b0", "#8bc34a", "#03a9f4", "#e91e63", "#9c27b0", "#8bc34a", "#03a9f4", "#e91e63", "#9c27b0", "#8bc34a", "#03a9f4"]
@@ -268,6 +434,7 @@ const wallgen = new WallpaperGen({
             })
         },
         // Foreground
+        // biggieones
         {
             ratio: 0.0005,
             opacity: 0.5,
@@ -277,6 +444,12 @@ const wallgen = new WallpaperGen({
             placementOffset: baseSize * 2,
             placementOffsetVariation: baseSize * 8,
             gradientStart: 0,
+            regenerateEvery: 20000,
+            displacement: {
+                x: baseSize / 20,
+                y: baseSize / 20
+            },
+            displacementInterval: 0.0005,
             drawShape: drawShapeRectangle({
                 size: baseSize / 8,
                 sizeVariation: 4,
@@ -285,14 +458,23 @@ const wallgen = new WallpaperGen({
                 lineWidth: 0.1,
                 stroke: true
             })
-        }, {
-            ratio: 0.0005,
+        },
+        // centralones
+        {
+            ratio: 0.00025,
+            repeat: 2,
             opacity: 1,
             fill: gradients.sort(() => Math.random() - 0.5).slice(0, 4),
             fillType: "gradient",
             placement: "center",
             placementOffset: baseSize,
             placementOffsetVariation: baseSize * 1.5,
+            regenerateEvery: 15000,
+            displacement: {
+                x: baseSize / 10,
+                y: baseSize / 10
+            },
+            displacementInterval: 0.0005,
             drawShape: drawShapeRectangle({
                 size: baseSize / 6,
                 sizeVariation: 0,
@@ -303,6 +485,55 @@ const wallgen = new WallpaperGen({
                 stroke: true
             })
         }, {
+            ratio: 0.00020,
+            repeat: 4,
+            opacity: 1,
+            fill: gradients.sort(() => Math.random() - 0.5).slice(0, 4),
+            fillType: "gradient",
+            placement: "center",
+            placementOffset: baseSize,
+            placementOffsetVariation: baseSize * 1.5,
+            displacement: {
+                x: baseSize / 6,
+                y: baseSize / 6
+            },
+            displacementInterval: 0.0001,
+            regenerateEvery: 10000,
+            drawShape: drawShapeRectangle({
+                size: baseSize / 6,
+                sizeVariation: 0,
+                elongation: 2,
+                elongationVariation: 3,
+                lineWidth: 0.1,
+                glow: 1,
+                stroke: true
+            })
+        }, {
+            ratio: 0.00005,
+            opacity: 1,
+            fill: gradients.sort(() => Math.random() - 0.5).slice(0, 4),
+            fillType: "gradient",
+            placement: "center",
+            placementOffset: baseSize,
+            placementOffsetVariation: baseSize * 1.5,
+            displacement: {
+                x: baseSize / 6,
+                y: baseSize / 6
+            },
+            displacementInterval: 0.0005,
+            regenerateEvery: 10000,
+            drawShape: drawShapeRectangle({
+                size: baseSize / 6,
+                sizeVariation: 0,
+                elongation: 2,
+                elongationVariation: 3,
+                lineWidth: 0.1,
+                glow: 1,
+                stroke: true
+            })
+        },
+        // farones
+        {
             ratio: 0.0015,
             opacity: 1,
             fill: gradients.sort(() => Math.random() - 0.5),
@@ -311,6 +542,12 @@ const wallgen = new WallpaperGen({
             gradientStart: 0,
             placementOffset: baseSize * 2,
             placementOffsetVariation: baseSize * 27,
+            displacement: {
+                x: baseSize / 20,
+                y: baseSize / 20
+            },
+            displacementInterval: 0.001,
+            regenerateEvery: 10000,
             drawShape: drawShapeRectangle({
                 size: baseSize / 6,
                 sizeVariation: 0,
@@ -325,7 +562,17 @@ const wallgen = new WallpaperGen({
 });
 
 wallgen.generate();
-document.body.appendChild(wallgen.canvas);
+wallgen.startRendering();
+/*
+window.addEventListener("resize", () => {
+    wallgen.resize(window.innerWidth, window.innerHeight, {
+        x: width * 0.75,
+        y: height / 2
+    });
+    wallgen.generate();
+});
+*/
+document.body.appendChild(wallgen.nogapCanvas);
 
 wallgen.canvas.addEventListener("click", () => {
     wallgen.download();
